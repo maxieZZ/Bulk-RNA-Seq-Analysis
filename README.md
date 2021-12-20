@@ -31,8 +31,8 @@
 > were plotted for better visualization and the final module results were analyzed via heatmap plots. Heatmap plots and data
 > were saved to files and three modules were selected based on geotype clustering for further analysis and subsetting.
 
-
-
-
+>
+![Similarity Matrix](https://github.com/maxieZZ/Bulk-RNA-Seq-Analysis/tree/master/results/images/similarityMatrixSubset.png)
+![Adjacency Matrix](https://github.com/maxieZZ/Bulk-RNA-Seq-Analysis/tree/master/results/images/adjacencyMatrixSubset.png)
 
 
