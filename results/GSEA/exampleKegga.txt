@@ -1,0 +1,21 @@
+	Pathway	N	Up	Down	P.Up	P.Down
+path:mcc04080	Neuroactive ligand-receptor interaction	96	27	14	0.000151749	0.693773563
+path:mcc00430	Taurine and hypotaurine metabolism	10	5	1	0.00662455	0.826041735
+path:mcc04950	Maturity onset diabetes of the young	5	3	1	0.02065551	0.582849235
+path:mcc00590	Arachidonic acid metabolism	38	9	7	0.066791493	0.409996005
+path:mcc00591	Linoleic acid metabolism	17	5	1	0.071826678	0.948900014
+path:mcc04928	"Parathyroid hormone synthesis, secretion and action"	74	15	10	0.07442694	0.769359052
+path:mcc04740	Olfactory transduction	30	7	4	0.106189958	0.731739063
+path:mcc05150	Staphylococcus aureus infection	42	9	9	0.11174051	0.222389638
+path:mcc04930	Type II diabetes mellitus	31	7	6	0.121808806	0.378295527
+path:mcc00592	alpha-Linolenic acid metabolism	15	4	1	0.138817541	0.927480306
+path:mcc04742	Taste transduction	22	5	3	0.173536234	0.709005972
+path:mcc05146	Amoebiasis	67	10	8	0.436769901	0.86284649
+path:mcc00524	"Neomycin, kanamycin and gentamicin biosynthesis"	4	1	2	0.445092449	0.123323156
+path:mcc05310	Asthma	18	3	7	0.455751245	0.016833011
+path:mcc04725	Cholinergic synapse	68	10	9	0.456160746	0.783377495
+path:mcc00601	Glycosphingolipid biosynthesis - lacto and neolacto series	15	2	3	0.628816683	0.440997197
+path:mcc00565	Ether lipid metabolism	31	4	2	0.629729982	0.969471095
+path:mcc05216	Thyroid cancer	31	4	8	0.629729982	0.111413795
+path:mcc04630	JAK-STAT signaling pathway	94	12	16	0.648392078	0.44034718
+path:mcc05231	Choline metabolism in cancer	79	10	10	0.654771862	0.835156823

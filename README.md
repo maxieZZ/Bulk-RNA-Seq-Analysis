@@ -29,4 +29,10 @@
 > method of analysis was then used as the starting point for module analysis. 11 gene modules from this shared list where
 > created using a custom function analogus to a pearson correlation blend. Subsets of the similarity and adjacency matrixes 
 > were plotted for better visualization and the final module results were analyzed via heatmap plots. Heatmap plots and data
-> where saved to files and three modules were selected based on geotype clustering for further analysis and subsetting.
+> were saved to files and three modules were selected based on geotype clustering for further analysis and subsetting.
+
+
+
+
+
+
