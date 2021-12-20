@@ -1,0 +1,564 @@
+---
+title: "Analysis of RNA NovaSeq Data from Two CFU Data-Sets"
+author: "Max Grice"
+date: "11/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Utilities
+```{r}
+source('./locale.R')
+# all helper functions are organized by purpose and stored in "utilities" folder
+source('./utilities/annotation.R')
+source('./utilities/edgeR.R')
+source('./utilities/deseq.R')
+source('./utilities/plots.R')
+```
+## FUTURE ADDITIONS
+# * GSEA Function that uses fry() to analyze data with custom gene sets (directed analysis)
+
+######################################################################################
+# PART 0) Combine multiple Expression Data-Sets into One Range Summerized Experiment #
+######################################################################################
+###################################################################
+## SKIP THESE STEPS IF DATA HAS ALREADY BEEN COMBINED AND SAVED ###    
+###################################################################
+# Read in both GSE data objects for old (Rocky) and new (Taehoon) CFU datasets 
+```{r}
+gse1 <- readRDS(file.path(rds_dir,'TET2_CFU_RNAseq.RDS'))
+gse1$macaque <- factor(gse1$macaque) # factor so macaque can be used in categorization for plots
+gse1 <- subset(gse1, select=gse1$macaque=="ZL26") # new CFU data
+gse2 <- readRDS('/Users/gricemz/Desktop/CFU_analysis2/rds/CFU_data1.RDS') # rocky's old CFU data
+```
+
+## Merge Raw Count Data for both Data Sets
+# (final combined object will quantify experession of 22520 genes in 13 samples)
+```{r}
+# get counts and rename columns so uniform between the two data sets
+# col1 and col2 can be WHATEVER labels you would like to use to refer to each sample in the 2 data-sets
+col1 <- c("TS_Mut_1", "TS_Mut_2", "TS_Mut_3", "TS_Mut_4", "TS_WT_1", "TS_WT_2", "TS_WT_3")
+col2 <- c("RK_Mut_1", "RK_Mut_2", "RK_Mut_3", "RK_WT_1", "RK_WT_2", "RK_WT_3"  )
+rownames(colData(gse1)) <- col1
+rownames(colData(gse2)) <- col2
+
+colData(gse1)$names <- col1 # set names variable to this new label
+colData(gse1)$macaque <- NULL # don't need for this data because all from the same macaque
+# label first data set with batch 1 (use for batch corrections later)
+batch <- replicate(nrow(colData(gse1)), 1) 
+colData(gse1) <- cbind(colData(gse1),batch) # add this batch variable to the column data
+
+colData(gse2)$names <- col2
+colData(gse2)$condition <- NULL # use genotype and not condition for consistency between 2 data-sets
+genotype <- factor(c("HT","HT","HT","WT","WT","WT")) # create new genotype variable manually
+genotype <- relevel(genotype, ref="WT") # make sure wild type is reference
+colData(gse2) <- cbind(colData(gse2),genotype) 
+batch <- replicate(nrow(colData(gse2)), 2) # label data set 2 as batch 2 for each sample and add
+colData(gse2) <- cbind(colData(gse2),batch) 
+
+gse <- cbind(gse1,gse2) # now that the columns of the two data sets are the same, we can bind by column!
+```
+
+## Add Gene Annotation to new combined gse object and save as RDS file
+```{r }
+ensembl_IDs <- rownames(assay(gse))
+# only correct the gene IDs if they are ENSEMBL IDs
+Symbol <- create_ENS_HGNC_dict(ensembl_IDs) # get symbols
+entrez <- create_ENS_Entrez_dict(ensembl_IDs) # get entrez id
+
+# add annotation descriptions to genes from ENSEMBL database
+ann_df <- add_anns(ensembl_ids = ensembl_IDs)
+anns <- ann_df$description
+names(anns) <- ann_df$ensembl_gene_id
+descriptions <- anns[ensembl_IDs]
+# add symbols, entrez id, and description to metadata of gse object
+gse@rowRanges@elementMetadata@listData<- data.frame(Ensembl=ensembl_IDs,Symbol=Symbol,
+                                                    Entrez=entrez,Desc=descriptions)
+saveRDS(gse, file.path(rds_dir,"combinedCFU.RDS")) # save file for later analysis/use
+```
+
+###########################################################
+## ANALYSIS STARTS HERE (READS IN COMBINED GSE OBJECT) ####    
+###########################################################
+################################
+# PART I) Analysis via DESeq2 #
+################################
+# Load gse, Create dds and Apply Variance Stabilizing Transformation
+# (vst removes dependence of mean on variance)
+# In the plot below, you would hope to see a more normal distribution 
+# (decreasing the number of high mean counts with high variance)
+```{r}
+gse <- readRDS(file.path(rds_dir,'combinedCFU.RDS')) # read data (including metadata & added annotation)
+# create DESeq data object, looking for the effects of genotype while controlling for batch
+dds <- create_dds(gse=gse, desig=c("batch","genotype"), hist=TRUE) 
+vsd <- var_transform(dds=dds, plotFit=TRUE) # variance stabilized transformation (returns plot)
+```
+## Exploratory Analysis and Plots for DESeq2
+# If specified, functions below will save pdf copies of plots to an output folder
+# For PCA, num_catagories specifies how many of the variables in the data you want to look at 
+# while catagories allows you to specify the names of these variables (normally 1-2)
+``` {r }
+euclidean_plot(vsd=vsd, dir=file.path(local_dir, 'results/plots'), # plot distance map of results
+               titl="euclideanCFUdds", rownames=vsd@colData@listData$names, savetoPDF=FALSE) 
+plot_pca(vsd=vsd, num_catagories=2, catagories=c("genotype","batch"), 
+         dir=file.path(local_dir, 'results/plots'), titl="ddsPCA", savetoPDF=FALSE)
+```
+
+## Compute and Save Results and Significant DE Gene Objects
+# Plot Volcano of DESeq2 Differential Expression Results and Save to File
+```{r}
+# res is differential expression results for ALL genes quantified
+res <- compute_dge(dds=dds, contr=c("genotype", "HT", "WT"), a=0.1, titl="resCFU", 
+                   co=3,dir=file.path(results_dir, 'DGE'), savetoFile=FALSE, showSummary=TRUE)
+# sig is only those genes that are determined to be significant based on adjusted p values
+sig <- compute_sig(res=res, cutof=0.1, order='padj', 
+                   titl="sigCFU", savetoFile=FALSE)
+# volcano may also be saved to a pdf file if specified...
+plot_volcano(data=sig,gene_anno=sig$symbols,dir=file.path(results_dir, 'plots'),
+             xlab='log2FoldChange',ylab='padj', savetoPDF=FALSE, titl="volcanoDESeq")
+```
+###############################
+# PART II) Analysis via EdgeR #
+###############################
+# NOTE: EdgeR and DESeq2 should be roughly equivalent methods with only a few differences 
+# The below analysis was used both to compare against the DESeq2 results and also to perform
+# undirected gene set analysis because edgeR outputs an object that is more compatable
+# The code below: 
+# Makes a DGL List (creates object with combined datasets) & Filters duplicates and Low Count Genes
+```{r}
+dgl <- makeDGEList(gse)
+dgl$genes <- gse@rowRanges@elementMetadata
+dgl$samples$group <- gse$genotype
+cat(paste("Number of starting genes is: ", nrow(dgl), "\n", sep="")) # print starting genes
+dgl <- filter_duplicates(dgl) # filter duplicate genes and print genes remaining
+dgl <- filter_lowcts(dgl) # filter low count genes and print genes remaining
+```
+
+# Normalize Data and Plot MDS 
+# (similar to PCA in DESeq2 and used for comparison purposes)
+```{r}
+dgl <- edgeR::calcNormFactors(dgl) # normalization
+dgl$samples
+plotMDS(dgl) # distances are typical log fold changes between samples
+plotMDS(dgl, gene.selection="common") # PCA version
+normalized_cts <- cpm(dgl)
+```
+## Create A Design Object for Differential Gene Expression Analysis
+# (note: design should measure changes between genotype (HT vs WT) while controling for batch effects)
+## Estimate/Print Dispersion of DGL and Plot Variation
+```{r}
+batch <- colData(gse)$batch
+genotype <- colData(gse)$genotype
+data.frame(sample=colnames(dgl),batch,genotype)
+
+design <- model.matrix(~batch+genotype)
+rownames(design) <- colnames(dgl)
+design
+
+dgl <- estimateDisp(dgl,design, robust=TRUE)
+cd <- dgl$common.dispersion
+disp <- sqrt(cd)
+cat(paste("Coeffeicient of biological variation is around ", disp, sep=""))
+plotBCV(dgl) # plot dispersion trends to check
+```
+## Fit a Generalized Linear Model with the Design Matrix and Plot Mean Differences
+```{r}
+fit <- glmFit(dgl, design) # find fit-wise glm
+lrt <- glmLRT(fit) # conduct likelihood ratio tests for HT vs WT and show top genes
+#View(topTags(lrt)$table)
+o <- order(lrt$table$PValue)
+#View(cpm(dgl)[o[1:10],]) # look at the counts per million of individual samples for top DE genes
+summary(decideTests(lrt))
+plotMD(lrt, main="Mean Difference Plot of Count Data")
+abline(h=c(-1,1),col="blue")
+```
+## Adjust P Values for Multiple Comparisons 
+```{r}
+p_adjust <- p.adjust(p = lrt$table$PValue, method = 'BH') # adjust p-values for multiple comparisons
+ann_df <- add_anns(ensembl_ids = lrt$genes$Ensembl)
+anns <- ann_df$description
+names(anns) <- ann_df$ensembl_gene_id
+desc <- anns[lrt$genes$Ensembl]
+
+lrt$genes$ENSEMBL <- lrt$genes$Ensembl
+#lrt$genes$Ensembl <- NULL
+# Summarize likelihood ratio test into data.frame object
+summary_lrt <- data.frame(ENSEMBL = lrt$genes$ENSEMBL,
+                          symbol = lrt$genes$Symbol,
+                          AveLogCPM = lrt$AveLogCPM,
+                          log2FoldChange = lrt$table$logFC,
+                          LR = lrt$table$LR,
+                          PValue = lrt$table$PValue,
+                          adjustedPValue = p_adjust,
+                          description = desc)
+# description = anns$description
+summary_lrt <- summary_lrt[order(summary_lrt$adjustedPValue, # ALL results
+                                 decreasing = TRUE, na.last = TRUE), ]
+```
+
+## Subset to Significant Only DE Genes and Filter Any Non-Gene Symbols
+# (also plots a volcano plot of only significant results to compare with DESeq2)
+```{r}
+top_genes_df <- topTags(object = lrt, n = min(10000, nrow(summary_lrt)), adjust.method = 'BH', sort.by = 'PValue',p.value=0.1)
+
+# Not much avalible information on these genes which is why I choose to filter them out 
+top_genes_df$table <- subset(top_genes_df$table, !grepl("^ENSMMUG0", top_genes_df$table$Symbol))
+top_genes_df$table <- subset(top_genes_df$table, !grepl("^LOC", top_genes_df$table$Symbol))
+
+plot_volcano(data=top_genes_df$table,gene_anno=top_genes_df$table$Symbol,
+             dir=file.path(results_dir, 'plots'), xlab='logFC',ylab='FDR', 
+             savetoPDF=FALSE, titl="volcanoEdgeR")
+```
+
+## Save ALL Results and Significant DE Results to Seperate Files
+``` {r }
+write.table(x = summary_lrt, # total of 14719 DE genes in this significant set!
+            file = file.path(results_dir, 'DGE/lrtCFU.txt'),
+            append = FALSE, col.names = TRUE, quote = FALSE, row.names = FALSE, sep = '\t')
+write.table(x = top_genes_df@.Data, # 6360 genes total!!!
+            file = file.path(results_dir, 'DGE/sigCFUlrt.txt'),
+            append = FALSE, col.names = TRUE, quote = FALSE, 
+            row.names = FALSE, sep = '\t')
+```
+
+#######################################
+# PART III) Analyze & Compare Results #
+#######################################
+
+# Compare Significant DE Genes between DESeq2 and EdgeR
+```{r}
+cat(paste("out of the ", length(sig$symbols), " in deseq2 results ",
+          length(which(sig$symbols%in%top_genes_df$table$Symbol)), " are also in the lrt results \n", sep=""))
+cat(paste("out of the ", length(top_genes_df$table$Symbol), " in lrt results ",
+          length(which(top_genes_df$table$Symbol%in%sig$symbols)), " are also in the deseq2 results \n", sep=""))
+```
+
+# COMPARE PREVIOUS SHARED GENE ANALYSIS WITH PREVIOUS RESULTS
+# Note: In a different analysis, I analyzed both datasets seperately (without combining)
+# and then intersected their lists of differentially expressed genes together into one
+# ASSUMES that this previous list of genes has been saved as a tab deliminated .txt file in reslts folder
+# ~2340/~2400 shared genes (~97%) where found in the list of DE genes for this analysis!
+```{r}
+sharedList <- read.delim(file.path(results_dir,"sharedList.txt")) # previous shared list
+comb_shared <- intersect(sig$symbols, top_genes_df$table$Symbol) # common DE genes between DESeq&EdgeR
+all_shared <- intersect(sharedList$genes, comb_shared) # Intersect the two above lists
+
+# print above results
+cat(paste("With ", length(sig$symbols), " DE genes in deseq2 results and ",
+          length(top_genes_df$table$Symbol), " DE genes in edgeR results, there are ",
+          length(comb_shared), " DE genes common between the two \n", sep=""))
+cat(paste("Intersecting these results with the ", length(sharedList$genes), 
+          " shared DE genes found in seperate analyses, we find ", 
+          length(all_shared), " DE genes total in common\n", sep=""))
+sharedInfo <- subset(top_genes_df$table, top_genes_df$table$Symbol%in%all_shared) # save common list 
+```
+
+## Save Common List of (1284) Genes Found Above to File (Used later for Module Analysis)
+```{r}
+write.table(x=sharedInfo,file=file.path(results_dir,'DGE/all_shared_genes.txt'),
+            append=FALSE, col.names=TRUE, quote=FALSE, row.names=TRUE, sep='\t')
+```
+
+## Read in Previously Interesting Custom Gene Sets... 
+# ASSUMES these custom gene sets are tab deliminated .txt files in the "results/custom_gs" folder
+# See how many of these genes are also in the DESEQ Significant List of Genes
+# See how many of these genes are also in the EdgeR Significant List of Genes
+# See how many of these genes are also in the Total Shared List Object Saved Above
+```{r}
+rck_gs_path <- file.path(results_dir, "custom_gs/rck_genelist.txt")
+gs_dir <- file.path(results_dir, "custom_gs/data") # this is a folder with a variety of .txt files we want to combine into one!
+gs_path <- file.path(results_dir, "custom_gs/combined.txt")
+
+# this is the list of all kinds of inflammatory gene types that were compiled previously
+gs_file_lst <- list.files(path=gs_dir,pattern=".*.txt")
+read_in_files <- lapply(file.path(gs_dir,gs_file_lst), FUN=read.table, header=TRUE)
+genes_of_interest <- unlist(read_in_files, use.names=FALSE)
+
+rockys_gs <- read.table(file=rck_gs_path, header=TRUE) # genes displayed in rocky's heat-map
+interesting_subset <- read.table(file=gs_path, header=TRUE) # made in previous analysis by TS
+
+com1D <- compare_lists(parent_lst=sig$symbols, compare_lst=genes_of_interest, 
+                       compare_titl="genes_of_interest", parent_titl="DESeq Significant Results") #
+com1E <- compare_lists(parent_lst=top_genes_df$table$Symbol, compare_lst=genes_of_interest, 
+                       compare_titl="genes_of_interest", parent_titl="EdgeR Significant Results") 
+com1 <- compare_lists(parent_lst=sharedInfo$Symbol, compare_lst=genes_of_interest, 
+                       compare_titl="genes_of_interest", parent_titl="DESeq Significant Results") 
+
+com2D <- compare_lists(parent_lst=sig$symbols, compare_lst=rockys_gs$symbols, 
+                       compare_titl="Rockys Gene List", parent_titl="DESeq Significant Results") #
+com2E <- compare_lists(parent_lst=top_genes_df$table$Symbol, compare_lst=rockys_gs$symbols, 
+                       compare_titl="Rockys Gene List", parent_titl="EdgeR Significant Results") 
+com2 <- compare_lists(parent_lst=sharedInfo$Symbol, compare_lst=rockys_gs$symbols, 
+                       compare_titl="Rockys Gene List", parent_titl="DESeq Significant Results") 
+
+com3D <- compare_lists(parent_lst=sig$symbols, compare_lst=interesting_subset$combo1, 
+                       compare_titl="Interesting Subset", parent_titl="DESeq Significant Results") #
+com3E <- compare_lists(parent_lst=top_genes_df$table$Symbol, compare_lst=interesting_subset$combo1, 
+                       compare_titl="Interesting Subset", parent_titl="EdgeR Significant Results") 
+com3 <- compare_lists(parent_lst=sharedInfo$Symbol, compare_lst=interesting_subset$combo1, 
+                       compare_titl="Interesting Subset", parent_titl="DESeq Significant Results") 
+```
+
+## Plot Shared Genes and Interesting Gene Sets on Custom Heatmap and Save
+# Note: sharedInfo is the dataframe that contains all_shared gene list
+```{r}
+hp_anno <- data.frame(genotype=gse@colData@listData$genotype, batch=gse@colData@listData$batch)
+rownames(hp_anno) <- gse@colData@listData$names
+# make and save heatmaps for interesting gene subsets
+custom_heatmap(vsd=vsd, lst=com2, dir=file.path(local_dir, 'results/plots/heatmaps'),
+             titl="RckGenes", anno=hp_anno, group_num=3)
+custom_heatmap(vsd=vsd, lst=com1, dir=file.path(local_dir, 'results/plots/heatmaps'),
+             titl="InterestingGenes", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=com3, dir=file.path(local_dir, 'results/plots/heatmaps'),
+             titl="InterestingSubset", anno=hp_anno, group_num=4)
+#custom_heatmap(vsd=vsd, lst=sig$symbols[1:20], dir=file.path(local_dir, 'results/plots/heatmaps'),
+             #titl="Top50genes", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=all_shared, dir=file.path(local_dir, 'results/plots/heatmaps'),
+             titl="shared", anno=hp_anno, group_num=4)
+```
+
+# Save Top and Bottom LFC Values for Shared Genes and plot results on Heatmaps 
+# note group num divides the heatmap vertically into the 4 biggest clusters (also clustered by row) 
+```{r}
+custom_heatmap(vsd=vsd, lst=all_shared[1:100], dir=file.path(local_dir, 'results/plots/heatmaps'),
+             titl="sharedDown", anno=hp_anno, group_num=4) 
+custom_heatmap(vsd=vsd, lst=all_shared[1100:1200], dir=file.path(local_dir, 'results/plots/heatmaps'),
+             titl="sharedUp", anno=hp_anno, group_num=4)
+```
+
+## UNSUPERVISED GeneSet Analysis with GO and KEGG Databases using EdgeR results
+```{r}
+go <- goana(lrt, geneid=lrt$genes$Entrez, species = 'Mmu') # GO pathway enrichment
+goDF <- topGO(go, ont="BP", sort="Up", n=100, truncate=100)
+
+kegg <- kegga(lrt, geneid=lrt$genes$Entrez, species = 'Mmu') # KEGG pathway enrichment
+keggDF <- topKEGG(kegg, sort = 'Up', number = 100, truncate = 100)
+```
+
+## Write Results of Unsupervised GO and KEGG Analysis to Saved Files
+```{r}
+write.table(x = goDF,file = file.path(local_dir, 'results/GSEA/go.txt'),append = FALSE, 
+            col.names = TRUE, quote = FALSE, row.names = TRUE, sep = '\t')
+write.table(x = keggDF,file = file.path(local_dir, 'results/GSEA/kegg.txt'),append = FALSE, 
+            col.names = TRUE, quote = FALSE, row.names = TRUE, sep = '\t')
+```
+
+## Visualize Top Go Pathway Results in a Bar Chart
+```{r}
+plotGSEA_undirected(go=goDF, n1=1, n2=50, col="red", titl="TopGoResults", saveToPDF=TRUE, 
+       dir=file.path(results_dir, 'GSEA'), label="Term", direction="up")
+plotGSEA_undirected(go=keggDF, n1=1, n2=20, col="red", titl="TopKeggResults", saveToPDF=TRUE, 
+       dir=file.path(results_dir, 'GSEA'), label="Pathway", direction="up")
+```
+
+# PATHVIEW TOOL (Using Pathway IDs)....
+# RIG-1 Signaling: mcc04622, Node-like receptor signaling: mcc04621
+# JACK-STAT: mcc04630, IL-17: mcc04657, COVID: mcc05171, CVD: mcc05410
+# Cytokines: mcc04060, FOXO: mcc04068, P13K-ATK: mcc04151, mTOR: mcc04150
+# NF KB Signaling (mcc04064)
+```{r}
+path_map(data=top_genes_df, id="mcc04622",
+         dir=file.path(results_dir, "GSEA"))
+```
+
+########################################################################################
+## PART IV) MODULE ANALYSIS USING A PEARSON CORRELATION BLEND (Using Shared GeneList) ##
+########################################################################################
+```{r}
+coor_dist <- function(dat) { # Pearson Similarity Function
+  cor_matrix <- cor(t(dat)) # get the correlation values (range(-1,1))
+  dist_matrix <- as.matrix(dist(dat, diag=TRUE,upper=TRUE)) # get euclidean distance of all expression values
+  dist_matrix <- log1p(dist_matrix) # computes log(1+x) where x is the values of distance matrix (better values to work with)
+  # note larger values = less similar
+  dist_matrix <- 1 - (dist_matrix / max(dist_matrix)) # get these distance values as an overall percentage 
+  # sign will return -1 if negative and 1 if positive
+  # take the avg of cor and dist to get better similarity measurement!
+  sign(cor_matrix) * ((abs(cor_matrix) + dist_matrix) / 2)
+}
+```
+
+## Subset vsd by Shared Gene List and Calculate Similarity Matrix (using above function)
+```{r}
+dat <- as.matrix(assay(vsd))
+rownames(dat) <- rownames(vsd)
+dat <- dat[which(rownames(dat)%in%all_shared),]
+sim_matrix <- coor_dist(dat)
+```
+
+## Visualize a random sample of this similarity matrix on a heatmap
+```{r}
+heatmap_indices <- sample(nrow(sim_matrix), 500)
+heatmap.2(t(sim_matrix[heatmap_indices,heatmap_indices]), col=redgreen(75), labRow=NA, labCol=NA, 
+          trace='none', dendrogram='row',xlab='Gene',ylab='Gene', main="Similarity Matrix Sample")
+```
+
+## Calculate Adjacency Matrix from Similarity Matrix
+```{r}
+adj_matrix <- adjacency.fromSimilarity(sim_matrix,power=12,type='signed')
+rm(sim_matrix) # remove similarity matrix to save space
+```
+
+## Visualize a random sample of this adjacency matrix on a heatmap (like before)
+```{r}
+heatmap_indices <- sample(nrow(adj_matrix), 500)
+heatmap.2(t(adj_matrix[heatmap_indices,heatmap_indices]), col=redgreen(75), labRow=NA, labCol=NA, 
+          trace='none', dendrogram='row',xlab='Gene',ylab='Gene', main="Adjacency Matrix Sample")
+```
+
+## Use adjacency matrix to create a gene tree dendogram and cut into modules
+```{r}
+gene_tree <- hclust(as.dist(1-adj_matrix),method="average")
+module_labels = cutreeDynamicTree(dendro=gene_tree, deepSplit=TRUE)
+module_colors <- labels2colors(module_labels)
+
+symbols <- rownames(adj_matrix)
+desc <- res$descriptions[which(res$symbols%in%rownames(adj_matrix))]
+
+# save all data calculated above into gene_info dataframe
+gene_info <- data.frame(symbols=symbols, labels=module_labels, 
+                        colors=module_colors, descriptions=desc)
+#gene_info$color_rgb <- col2hex(gene_info$colors)
+```
+
+# Get each seperate module list from combined dataframe result
+``` {r }
+mod1 <- subset(gene_info, gene_info$labels==1)
+mod2 <- subset(gene_info, gene_info$labels==2)
+mod3 <- subset(gene_info, gene_info$labels==3)
+mod4 <- subset(gene_info, gene_info$labels==4)
+mod5 <- subset(gene_info, gene_info$labels==5)
+mod6 <- subset(gene_info, gene_info$labels==6)
+mod7 <- subset(gene_info, gene_info$labels==7)
+mod8 <- subset(gene_info, gene_info$labels==8)
+mod9 <- subset(gene_info, gene_info$labels==9)
+mod10 <- subset(gene_info, gene_info$labels==10)
+mod11 <- subset(gene_info, gene_info$labels==11)
+```
+
+## DIRECTED ANALYSIS: Focus on modules that separate well (plotted on heatmaps and observed clustering by condition)
+```{r}
+mod1DGE <- subset(sig, sig$symbols%in%mod1$symbols)
+mod8DGE <- subset(sig, sig$symbols%in%mod8$symbols)
+mod11DGE <- subset(sig, sig$symbols%in%mod11$symbols)
+```
+
+## Save Interesting Modules (best clustering) with pval and lfc to File
+```{r}
+write.table(x=mod1DGE,file=file.path(local_dir,'results/DGE/mod1DGE.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod8DGE,file=file.path(local_dir,'results/DGE/mod8DGE.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod11DGE,file=file.path(local_dir,'results/DGE/mod11DGE.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+```
+
+# Plot Heatmaps of all Modules for better Visualization
+```{r}
+custom_heatmap(vsd=vsd, lst=mod1$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod1", anno=hp_anno, group_num=2)
+custom_heatmap(vsd=vsd, lst=mod2$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod2", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=mod3$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod3", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=mod4$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod4", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=mod5$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod5", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=mod6$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod6", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=mod7$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod7", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=mod8$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod8", anno=hp_anno, group_num=3)
+custom_heatmap(vsd=vsd, lst=mod9$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod9", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=mod10$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod10", anno=hp_anno, group_num=4)
+custom_heatmap(vsd=vsd, lst=mod11$symbols, 
+               dir=file.path(local_dir, 'results/plots/heatmaps/modules'),
+               titl="mod11", anno=hp_anno, group_num=3)
+
+```
+
+## Write all basic module lists (just gene symbols) to seperate files
+```{r}
+write.table(x=mod1,file=file.path(local_dir,'results/DGE/modules/mod1.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod2,file=file.path(local_dir,'results/DGE/modules/mod2.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod3,file=file.path(local_dir,'results/DGE/modules/mod3.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod4,file=file.path(local_dir,'results/DGE/modules/mod4.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod5,file=file.path(local_dir,'results/DGE/modules/mod5.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod6,file=file.path(local_dir,'results/DGE/modules/mod6.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod7,file=file.path(local_dir,'results/DGE/modules/mod7.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod8,file=file.path(local_dir,'results/DGE/modules/mod8.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod9,file=file.path(local_dir,'results/DGE/modules/mod9.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod10,file=file.path(local_dir,'results/DGE/modules/mod10.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+write.table(x=mod11,file=file.path(local_dir,'results/DGE/modules/mod11.txt'),
+            append=FALSE,col.names=TRUE,quote=FALSE,row.names=TRUE,sep='\t')
+```
+
+
+```{r}
+mod_analysis_dir <- file.path(results_dir,"module_analysis")
+if(!dir.exists(mod_analysis_dir)) {
+      dir.create(mod_analysis_dir)
+}
+clust1 <- read.table(file=file.path(mod_analysis_dir,"mod1/clusters1.txt"), header=TRUE)
+clust8 <- read.table(file=file.path(mod_analysis_dir,"mod8/clusters8.txt"), header=TRUE)
+clust11 <- read.table(file=file.path(mod_analysis_dir,"mod11/clusters11.txt"), header=TRUE)
+
+# break modules into clusters based on dendrogram (too many genes to visualize at once)
+g1_1 <- subset(clust1$symbol, clust1$group==1)
+g1_2 <- subset(clust1$symbol, clust1$group==2)
+g1_3 <- subset(clust1$symbol, clust1$group==3)
+
+g8_1 <- subset(clust8$symbol, clust8$group==1)
+g8_2 <- subset(clust8$symbol, clust8$group==2)
+
+g11_1 <- subset(clust11$symbol, clust11$group==1)
+g11_2 <- subset(clust11$symbol, clust11$group==2)
+```
+
+# Plot and save heatmaps of these subgroups of only the interesting modules
+```{r}
+custom_heatmap(vsd=vsd, lst=g1_1, dir=file.path(mod_analysis_dir, 'mod1'),titl="sub1", anno=hp_anno, group_num=2)
+
+custom_heatmap(vsd=vsd, lst=g1_2, dir=file.path(mod_analysis_dir, 'mod1'),titl="sub2", anno=hp_anno, group_num=2)
+
+custom_heatmap(vsd=vsd, lst=c(g1_1,g1_2), dir=file.path(mod_analysis_dir, 'mod1'),
+             titl="sub1&2", anno=hp_anno, group_num=2)
+custom_heatmap(vsd=vsd, lst=g1_3, dir=file.path(mod_analysis_dir, 'mod1'),
+             titl="sub3", anno=hp_anno, group_num=2)
+
+custom_heatmap(vsd=vsd, lst=g8_1, dir=file.path(mod_analysis_dir, 'mod8'),
+             titl="sub1", anno=hp_anno, group_num=2)
+custom_heatmap(vsd=vsd, lst=g8_2, dir=file.path(mod_analysis_dir, 'mod8'),
+             titl="sub2", anno=hp_anno, group_num=2)
+
+custom_heatmap(vsd=vsd, lst=g11_1, dir=file.path(mod_analysis_dir, 'mod11'),
+             titl="sub1", anno=hp_anno, group_num=2)
+custom_heatmap(vsd=vsd, lst=g11_2, dir=file.path(mod_analysis_dir, 'mod11'),
+             titl="sub2", anno=hp_anno, group_num=2)
+```
